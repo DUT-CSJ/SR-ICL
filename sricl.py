@@ -100,10 +100,33 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+    
+class ConvFFN(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.):
+        super().__init__()
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.act = nn.GELU()
+        self.dp1 = nn.Dropout(dropout)
+        self.dwconv = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1, groups=hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.dp2 = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # L B C
+        l, b, c = x.size()
+        h = math.sqrt(l)
+        x = self.act(self.fc1(x))
+        x = self.dp1(x)
+        x = rearrange(x, '(H W) B C -> B C H W', h=h)
+        x = self.dwconv(x)
+        x = rearrange(x, 'B C H W -> (H W) B C')
+        x = self.fc2(x)
+        x = self.dp2(x)
+        return x
 
 
 class Attention(nn.Module):
-    def __init__(self, x_dim, y_dim=None, heads=8, hid_dim=64, dropout=0., use_sdpa=True):
+    def __init__(self, x_dim, y_dim=None, heads=8, hid_dim=64, dropout=0., use_sdpa=False):
         super().__init__()
         y_dim = y_dim if y_dim else x_dim
         self.heads = heads
@@ -120,12 +143,20 @@ class Attention(nn.Module):
         self.to_v = nn.Linear(y_dim, hid_dim, bias=False)
         self.to_out = nn.Sequential(nn.Linear(hid_dim, x_dim), nn.Dropout(dropout))
 
-    def forward(self, q, kv):
+        self.to_q2 = nn.Linear(x_dim, hid_dim, bias=False)
+        self.to_k2 = nn.Linear(y_dim, hid_dim, bias=False)
+        self.to_v2 = nn.Linear(y_dim, hid_dim, bias=False)
+        self.to_out2 = nn.Sequential(nn.Linear(hid_dim, x_dim), nn.Dropout(dropout))
+
+    def forward(self, q, q2, kv):
         # q, kv: L,B,C
         q = self.to_q(q)
         k = self.to_k(kv)
         v = self.to_v(kv)
-        q, k, v = map(lambda t: rearrange(t, 'n b (h d) -> b h n d', h=self.heads), (q, k, v))
+        q2 = self.to_q2(q2)
+        k2 = self.to_k2(kv)
+        v2 = self.to_v2(kv)
+        q, k, v, q2, k2, v2 = map(lambda t: rearrange(t, 'n b (h d) -> b h n d', h=self.heads), (q, k, v, q2, k2, v2))
         
         if self.use_sdpa:
             # q = q * self.scale
@@ -133,12 +164,18 @@ class Attention(nn.Module):
                 out = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=0, is_causal=False)
         else:
             dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-            attn = self.attend(dots)
+            dots2 = torch.matmul(q2, k2.transpose(-1, -2)) * self.scale
+            attn = self.attend(dots - dots2)
+            attn2 = self.attend(dots2 - dots)
+            # attn = self.attend(dots)
             attn = self.dropout(attn)
+            attn2 = self.dropout(attn2)
             out = torch.matmul(attn, v)
+            out2 = torch.matmul(attn2, v2)
         
         out = rearrange(out, 'b h n d -> n b (h d)')
-        return self.to_out(out)
+        out2 = rearrange(out2, 'b h n d -> n b (h d)')
+        return self.to_out(out), self.to_out2(out2)
 
 
 class CrossTransformer(nn.Module):
@@ -150,12 +187,17 @@ class CrossTransformer(nn.Module):
         self.ffn_norm = nn.LayerNorm(dim)
         self.ffn = FeedForward(dim, hidden_dim=hid_dim, dropout=dropout)
 
-    def forward(self, tgt, memory):
-        tgt = tgt + self.attn(tgt, memory)
+    def forward(self, tgt, tgt2, memory):
         tgt = self.attn_norm(tgt)
-        tgt = tgt + self.ffn(tgt)
+        tgt2 = self.attn_norm(tgt2)
+        attn, attn2 = self.attn(tgt, tgt2, memory)
+        tgt = tgt + attn
+        tgt2 = tgt2 + attn2
         tgt = self.ffn_norm(tgt)
-        return tgt
+        tgt = tgt + self.ffn(tgt)
+        tgt2 = self.ffn_norm(tgt2)
+        tgt2 = tgt + self.ffn(tgt2)
+        return tgt, tgt2
 
 class BasicConv2d(nn.Module):
     def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1):
@@ -182,8 +224,9 @@ class SRICL(nn.Module):
             self.bkbone = timm.create_model('convnextv2_base.fcmae_ft_in22k_in1k_384', features_only=True, pretrained=True)
             channel = 64
             self.channel = channel
-
+            # 解码器部分
             squeeze_channel = 64
+
             self.upconv5 = nn.ConvTranspose2d(1024, squeeze_channel, kernel_size=2, stride=2)
             self.conv5_1 = nn.Conv2d(512+squeeze_channel, squeeze_channel, kernel_size=3, padding=1)
             self.bn5_1 = nn.BatchNorm2d(squeeze_channel)
@@ -199,14 +242,8 @@ class SRICL(nn.Module):
             self.emb_dim = channel
             self.output_dim = 1
 
-            total_dim = self.emb_dim * self.output_dim
-            self.ref_proj = nn.Sequential(nn.Linear(1024, 584), nn.LayerNorm(584))
-            self.head = nn.Sequential(
-                            BasicConv2d(channel, channel, kernel_size=3, padding=1),
-                            nn.Dropout2d(p=0.1), 
-                            nn.Conv2d(channel, 1, 1)
-                        )
-        self.cross_atten3 = CrossTransformer(self.emb_dim, 4, hid_dim=self.emb_dim, dropout=0.1)
+            self.ref_proj = nn.Sequential(nn.Linear(1024, 1096), nn.LayerNorm(1096))
+            self.cross_attn = CrossTransformer(dim=1096, heads=8, hid_dim=1096*2, dropout=0.1)
 
     def forward(self, x, filter_list, mask_list):
         input = x
@@ -230,11 +267,13 @@ class SRICL(nn.Module):
             query_back = ((1 - mask) * query).sum((0, 1, 2)) / (1 + (1 - mask).sum((0, 1, 2)))  # C
 
             query = torch.stack((query_fore, query_back), dim=0).unsqueeze(1)  # 2,1,C
-            query_3 = self.cross_atten3(query, memory)
-            query_3 = query_3.reshape(2, 1, 584, 1, 1)
+            query_3 = query
+            query_3 = query_3.reshape(2, 1, 1096, 1, 1)
 
-            kernels_3.append(query_3)
+            kernels_3.append(query_3)# 2 1 584 1 1
         # ------------Reffering information generation----------------------
+
+        E5 = self.dem5(E5)
         D5 = self.upconv5(E5)
         D5 = torch.cat([D5, E4], dim=1)
         D5 = F.relu(self.bn5_1(self.conv5_1(D5)))
@@ -247,24 +286,21 @@ class SRICL(nn.Module):
         D3 = torch.cat([D3, E2], dim=1)
         D2 = F.relu(self.bn3_1(self.conv3_1(D3)))
 
-        out_fore = self.head(D2)
-        out_fore = F.interpolate(out_fore, size=input.size()[2:], mode='bilinear')
-
         output_fpn = []
         output_bkg = []
         for k3 in kernels_3:
             dk = k3[0] # 1 584 1 1
-            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2, weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
             output_fpn.append(out)
             dk = k3[1] # 1 584 1 1
-            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2, weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
@@ -280,22 +316,22 @@ class SRICL(nn.Module):
         memory = memory.reshape(B, H, W, -1).permute(0, 3, 1, 2)
         cache = F.interpolate(torch.cat((output_bkg, output_fpn), dim=1), size=memory.size()[2:], mode='bilinear')
         # -----------------SR------------------------------------------------------------------------
-        SRFP, SRBP = SR(memory, cache) # B C 1 1 -> 1 C 1 1
+        SRFP, SRBP = self.SR(memory, cache) # B C 1 1 -> 1 C 1 1
         output_fpn = []
         output_bkg = []
         for bs in range(D2.shape[0]):
             dk = k3[0] * 0.7 + SRFP[bs].unsqueeze(0) * 0.3 # 1 584 1 1
-            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2[bs].unsqueeze(0), weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
             output_fpn.append(out)
             dk = k3[1] * 0.7 + SRBP[bs].unsqueeze(0) * 0.3 # 1 584 1 1
-            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2[bs].unsqueeze(0), weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
@@ -304,40 +340,45 @@ class SRICL(nn.Module):
         output_bkg = torch.cat(output_bkg, dim=0)
         output_fpn = F.interpolate(output_fpn, size=input.size()[2:], mode='bilinear')
         output_bkg = F.interpolate(output_bkg, size=input.size()[2:], mode='bilinear')
-        return out_fore, output_fpn, output_bkg, output_prior, output_priorb
+        return output_fpn, output_bkg, output_prior, output_priorb
 
+    
+    def SR(self, feature_q, out):
+        '''
+            feature_q: (B, C, H, W)
+            out: (B, 2, H, W)
+        '''
+        channel = 1096
+        bs = feature_q.shape[0]
+        pred_1 = out.softmax(1) # B 2 H W
+        pred_1 = pred_1.view(bs, 2, -1) # B 2 HW
+        pred_fg = pred_1[:, 1] # B HW
+        pred_bg = pred_1[:, 0] # B HW
+        fg_ls = []
+        bg_ls = []
+        for epi in range(bs):
+            fg_thres = 0.7
+            bg_thres = 0.7
+            cur_feat = feature_q[epi].view(channel, -1) # C HW
+            if (pred_fg[epi] > fg_thres).sum() > 0:
+                fg_feat = cur_feat[:, (pred_fg[epi]>fg_thres)] #.mean(-1)
+            else:
+                fg_feat = cur_feat[:, torch.topk(pred_fg[epi], 3).indices] #.mean(-1) 3max
+            if (pred_bg[epi] > bg_thres).sum() > 0:
+                bg_feat = cur_feat[:, (pred_bg[epi]>bg_thres)] #.mean(-1)
+            else:
+                bg_feat = cur_feat[:, torch.topk(pred_bg[epi], 3).indices] #.mean(-1)
+            fg_feat = fg_feat.mean(dim=-1, keepdim=True).unsqueeze(0).permute(2, 0, 1) # 1 C L -> L 1 C
+            bg_feat = bg_feat.mean(dim=-1, keepdim=True).unsqueeze(0).permute(2, 0, 1)
+            fg_feat, bg_feat = self.cross_attn(fg_feat, bg_feat, cur_feat.unsqueeze(0).permute(2, 0, 1))
 
-def SR(feature_q, out):
-    '''
-        feature_q: (B, C, H, W)
-        out: (B, 2, H, W)
-    '''
-    channel = 584
-    bs = feature_q.shape[0]
-    pred_1 = out.softmax(1)
-    pred_1 = pred_1.view(bs, 2, -1)
-    pred_fg = pred_1[:, 1]
-    pred_bg = pred_1[:, 0]
-    fg_ls = []
-    bg_ls = []
-    for epi in range(bs):
-        fg_thres = 0.7
-        bg_thres = 0.7
-        cur_feat = feature_q[epi].view(channel, -1)
-        if (pred_fg[epi] > fg_thres).sum() > 0:
-            fg_feat = cur_feat[:, (pred_fg[epi]>fg_thres)]
-        else:
-            fg_feat = cur_feat[:, torch.topk(pred_fg[epi], 3).indices]
-        if (pred_bg[epi] > bg_thres).sum() > 0:
-            bg_feat = cur_feat[:, (pred_bg[epi]>bg_thres)]
-        else:
-            bg_feat = cur_feat[:, torch.topk(pred_bg[epi], 3).indices]
-        fg_proto = fg_feat.mean(-1)
-        bg_proto = bg_feat.mean(-1)
-        fg_ls.append(fg_proto.unsqueeze(0))
-        bg_ls.append(bg_proto.unsqueeze(0))
-    new_fg = torch.cat(fg_ls, 0).unsqueeze(-1).unsqueeze(-1)
-    new_bg = torch.cat(bg_ls, 0).unsqueeze(-1).unsqueeze(-1)
+            fg_proto = fg_feat.mean(dim=(0, 1)) # C
+            bg_proto = bg_feat.mean(dim=(0, 1))
+            fg_ls.append(fg_proto.unsqueeze(0)) # 1 C
+            bg_ls.append(bg_proto.unsqueeze(0))
 
-    return new_fg, new_bg
+        new_fg = torch.cat(fg_ls, 0).unsqueeze(-1).unsqueeze(-1) # B C 1 1
+        new_bg = torch.cat(bg_ls, 0).unsqueeze(-1).unsqueeze(-1)
+
+        return new_fg, new_bg
     
