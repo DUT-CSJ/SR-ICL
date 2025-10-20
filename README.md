@@ -2,6 +2,13 @@
 
 Code of Unified Medical Lesion Segmentation via Self-referring Indicator
 
+### Environment
+
+```
+conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.7 -c pytorch -c nvidia
+pip install timm==1.0.9
+```
+
 ### Datasets
 
 Wet AMD: [AMD-SD](https://www.kaggle.com/datasets/gaoweihao/amd-sd)
@@ -30,6 +37,10 @@ sh run.sh
 
 Inference
 
+```
+python inference.py
+```
+
 ### Note
 
 In the original implementation (dataset.py), you need to split each dataset into training and validation sets, and then write the lists of images for the training and validation sets into separate text files.
@@ -39,7 +50,7 @@ Here is a better implementation (dataset_new.py): you only need to provide the d
 ### Cite
 
 ```
-@InProceedings{Chang_2025_CVPR,
+@InProceedings{sricl,
     author    = {Chang, Shijie and Zhao, Xiaoqi and Zhang, Lihe and Wang, Tiancheng},
     title     = {Unified Medical Lesion Segmentation via Self-referring Indicator},
     booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
