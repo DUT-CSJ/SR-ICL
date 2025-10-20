@@ -4,7 +4,7 @@ Unified Medical Lesion Segmentation via Self-referring Indicator
 
 ### Datasets
 
-Wet AMD: AMD-SD[https://www.kaggle.com/datasets/gaoweihao/amd-sd]
+Wet AMD: (AMD-SD)[https://www.kaggle.com/datasets/gaoweihao/amd-sd]
 
 
 In the original implementation (dataset.py), you need to split each dataset into training and validation sets, and then write the lists of images for the training and validation sets into separate text files.
