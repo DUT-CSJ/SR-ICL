@@ -272,8 +272,6 @@ class SRICL(nn.Module):
 
             kernels_3.append(query_3)# 2 1 584 1 1
         # ------------Reffering information generation----------------------
-
-        E5 = self.dem5(E5)
         D5 = self.upconv5(E5)
         D5 = torch.cat([D5, E4], dim=1)
         D5 = F.relu(self.bn5_1(self.conv5_1(D5)))
