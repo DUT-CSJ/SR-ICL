@@ -243,7 +243,7 @@ class SRICL(nn.Module):
             self.output_dim = 1
 
             self.ref_proj = nn.Sequential(nn.Linear(1024, 584), nn.LayerNorm(584))
-            self.cross_attn = CrossTransformer(dim=584, heads=8, hid_dim=584*2, dropout=0.1)
+            self.cross_attn = CrossTransformer(dim=584, heads=4, hid_dim=584*2, dropout=0.1)
 
     def forward(self, x, filter_list, mask_list):
         input = x
