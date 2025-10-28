@@ -288,17 +288,17 @@ class SRICL(nn.Module):
         output_bkg = []
         for k3 in kernels_3:
             dk = k3[0] # 1 584 1 1
-            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2, weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
             output_fpn.append(out)
             dk = k3[1] # 1 584 1 1
-            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2, weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
@@ -319,17 +319,17 @@ class SRICL(nn.Module):
         output_bkg = []
         for bs in range(D2.shape[0]):
             dk = k3[0] * 0.7 + SRFP[bs].unsqueeze(0) * 0.3 # 1 584 1 1
-            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2[bs].unsqueeze(0), weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
             output_fpn.append(out)
             dk = k3[1] * 0.7 + SRBP[bs].unsqueeze(0) * 0.3 # 1 584 1 1
-            dk1 = dk[:, 0:1024, :, :].reshape(8, 128, 1, 1) # 1 512 1 1
-            dk2 = dk[:, 1024:1024+64, :, :].reshape(8, 8, 1, 1)
-            dk3 = dk[:, 1024+64:, :, :].reshape(1, 8, 1, 1)
+            dk1 = dk[:, 0:512, :, :].reshape(8, 64, 1, 1) # 1 512 1 1
+            dk2 = dk[:, 512:512+64, :, :].reshape(8, 8, 1, 1)
+            dk3 = dk[:, 512+64:, :, :].reshape(1, 8, 1, 1)
             out = F.conv2d(input=D2[bs].unsqueeze(0), weight=dk1, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk2, stride=1, padding=0)
             out = F.conv2d(input=F.relu(out), weight=dk3, stride=1, padding=0)
