@@ -242,8 +242,8 @@ class SRICL(nn.Module):
             self.emb_dim = channel
             self.output_dim = 1
 
-            self.ref_proj = nn.Sequential(nn.Linear(1024, 1096), nn.LayerNorm(1096))
-            self.cross_attn = CrossTransformer(dim=1096, heads=8, hid_dim=1096*2, dropout=0.1)
+            self.ref_proj = nn.Sequential(nn.Linear(1024, 584), nn.LayerNorm(584))
+            self.cross_attn = CrossTransformer(dim=584, heads=8, hid_dim=584*2, dropout=0.1)
 
     def forward(self, x, filter_list, mask_list):
         input = x
@@ -268,7 +268,7 @@ class SRICL(nn.Module):
 
             query = torch.stack((query_fore, query_back), dim=0).unsqueeze(1)  # 2,1,C
             query_3 = query
-            query_3 = query_3.reshape(2, 1, 1096, 1, 1)
+            query_3 = query_3.reshape(2, 1, 584, 1, 1)
 
             kernels_3.append(query_3)# 2 1 584 1 1
         # ------------Reffering information generation----------------------
